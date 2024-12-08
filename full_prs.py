@@ -479,7 +479,7 @@ print("Analyzing CAD prevalence across PRS deciles...")
 merged_scores['prs_decile'] = pd.qcut(merged_scores['prs_zscore'], q=10, labels=[f'D{i}' for i in range(1,11)])
 
 # Compute prevalence of CAD in each decile
-decile_stats = merged_scores.groupby('prs_decile').agg({'CAD_status': ['count', 'mean']}).reset_index()
+decile_stats = merged_scores.groupby('prs_decile').agg({'T1D_status': ['count', 'mean']}).reset_index()
 decile_stats.columns = ['prs_decile', 'count', 'prevalence']
 decile_stats['prevalence'] = decile_stats['prevalence'] * 100
 
@@ -505,7 +505,7 @@ print("Calculating odds ratio per standard deviation (SD) increase in PRS...")
 
 # Logistic regression with PRS z-score as a predictor of CAD status
 X = merged_scores[['prs_zscore']]
-y = merged_scores['CAD_status']
+y = merged_scores['T1D_status']
 log_model = LogisticRegression()
 log_model.fit(X, y)
 
