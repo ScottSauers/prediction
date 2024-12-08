@@ -386,7 +386,7 @@ print("Visualizing distributions with improved aesthetics...")
 fig, axs = plt.subplots(2, 2, figsize=(20, 12))
 plt.subplots_adjust(wspace=0.3, hspace=0.4)
 
-# Histogram of PRS z-scores
+# Histogram of PRS z-scores... delete since we already have density
 sns.histplot(data=prs_scores_final_df, x='prs_zscore', bins=50, ax=axs[0,0], color=palette(0.2))
 axs[0,0].set_title('T1D PRS Z-score Distribution', fontsize=18, fontweight='bold')
 axs[0,0].set_xlabel('PRS Z-score', fontsize=16)
