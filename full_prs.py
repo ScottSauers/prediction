@@ -328,8 +328,8 @@ wgs_ehr_df = get_wgs_ehr_samples_df()
 wgs_ehr_ids_csv = save_wgs_ehr_ids(wgs_ehr_df)
 prs_subset_vds = filter_vds_to_wgs_ehr(cleaned_vds, wgs_ehr_ids_csv)
 
-target_prs_id = 'PGS000001'
-harmonized_url = 'https://ftp.ebi.ac.uk/pub/databases/spot/pgs/scores/PGS000001/ScoringFiles/Harmonized/PGS000001_hmPOS_GRCh38.txt.gz'
+target_prs_id = 'PGS003725'
+harmonized_url = 'https://ftp.ebi.ac.uk/pub/databases/spot/pgs/scores/PGS003725/ScoringFiles/Harmonized/PGS003725_hmPOS_GRCh38.txt.gz'
 harmonized_file = download_prs_files(target_prs_id, harmonized_url)
 preview_harmonized_file(harmonized_file)
 prepared_csv = prepare_prs_weight_table(harmonized_file, target_prs_id)
