@@ -112,9 +112,9 @@ def filter_vds_to_wgs_ehr(vds, wgs_ehr_ids_csv):
     print("VDS filtered to WGS+EHR samples. Final count:", subset.n_samples(), "\n")
     return subset
 
-def download_prs_files(prs_id, harmonized_url, original_url):
+def download_prs_files(prs_id, harmonized_url):
+    # Removed the original_url since it was unused
     harmonized_local = f'{prs_id}_hmPOS_GRCh38.txt.gz'
-    original_local = f'{prs_id}.txt.gz'
 
     print("Downloading harmonized PRS file from:", harmonized_url)
     response = requests.get(harmonized_url)
@@ -122,15 +122,11 @@ def download_prs_files(prs_id, harmonized_url, original_url):
         out_file.write(response.content)
     print("Harmonized PRS weight file downloaded.\n")
 
-    print("Downloading original PRS file for comparison...")
-    !wget -O {original_local} {original_url}
-    print("Original PRS weight file downloaded.\n")
-
     print("Listing local files for verification...")
     !ls
     print("\nDecompressing harmonized PRS file for inspection...")
     !gunzip -f {harmonized_local}
-    return harmonized_local.replace('.gz', ''), original_local
+    return harmonized_local.replace('.gz', '')
 
 def preview_harmonized_file(harmonized_file):
     print("Previewing the first 25 lines of the harmonized PRS file:")
@@ -150,6 +146,7 @@ def prepare_prs_weight_table(harmonized_file, prs_id):
         'effect_weight': 'weight'
     })
 
+    # Necessary columns
     score_df = score_df[['chr', 'bp', 'effect_allele', 'weight']]
     score_df['chr'] = score_df['chr'].astype(str)
 
@@ -158,7 +155,6 @@ def prepare_prs_weight_table(harmonized_file, prs_id):
     score_df.to_csv(prepared_csv, index=False)
     print("PRS weight table saved locally.\n")
     return prepared_csv
-
 
 def upload_prs_table_to_gcs(local_csv, prs_id):
     prs_weights_dest = f'scores/{prs_id}/weight_table/{prs_id}_weight_table.csv'
@@ -183,11 +179,10 @@ def rebuild_prs_weight_table_as_df(input_path, bucket):
     if missing:
         raise ValueError(f"Missing required columns: {missing}")
 
-    print("Adding Hail-compatible columns: contig, position, variant_id")
+    print("Adding Hail-compatible columns: contig, position")
     df['chr'] = df['chr'].astype(str)
     df['contig'] = df['chr'].apply(lambda c: c if c.startswith('chr') else f'chr{c}')
     df['position'] = df['bp']
-    df['variant_id'] = df.apply(lambda row: f"{row['contig']}:{row['position']}", axis=1)
     print("[ PRS Weight Table Rebuild Complete ]\n")
     return df
 
@@ -211,7 +206,7 @@ def load_prepared_prs_table_for_annotation(bucket, weight_path):
     else:
         score_df = pd.read_csv(weight_path)
 
-    essential = ["variant_id", "weight", "contig", "position", "effect_allele"]
+    essential = ["weight", "contig", "position", "effect_allele"]
     for c in essential:
         if c not in score_df.columns:
             raise ValueError(f"PRS weight table missing required column: {c}")
@@ -335,8 +330,7 @@ prs_subset_vds = filter_vds_to_wgs_ehr(cleaned_vds, wgs_ehr_ids_csv)
 
 target_prs_id = 'PGS000001'
 harmonized_url = 'https://ftp.ebi.ac.uk/pub/databases/spot/pgs/scores/PGS000001/ScoringFiles/Harmonized/PGS000001_hmPOS_GRCh38.txt.gz'
-original_prs_url = 'https://ftp.ebi.ac.uk/pub/databases/spot/pgs/scores/PGS000001/ScoringFiles/PGS000001.txt.gz'
-harmonized_file, _ = download_prs_files(target_prs_id, harmonized_url, original_prs_url)
+harmonized_file = download_prs_files(target_prs_id, harmonized_url)
 preview_harmonized_file(harmonized_file)
 prepared_csv = prepare_prs_weight_table(harmonized_file, target_prs_id)
 prs_weights_destination = upload_prs_table_to_gcs(prepared_csv, target_prs_id)
@@ -383,19 +377,42 @@ prs_scores_final_df['prs_percentile'] = prs_scores_final_df['prs_zscore'].rank(p
 print("Categorizing samples into quintiles...")
 prs_scores_final_df['risk_category'] = pd.qcut(prs_scores_final_df['prs_zscore'], q=5, labels=['Very Low', 'Low', 'Average', 'High', 'Very High'])
 
-print("Visualizing distributions...")
-plt.figure(figsize=(15, 10))
-plt.subplot(2, 1, 1)
-sns.histplot(data=prs_scores_final_df, x='prs_zscore', bins=50)
-plt.title('T1D PRS Z-Score Distribution')
-plt.xlabel('PRS Z-score')
-plt.ylabel('Frequency')
+# Make the visualizations more beautiful
+sns.set_style("whitegrid")
+sns.set_context("talk")
+palette = sns.color_palette("viridis", as_cmap=True)
 
-plt.subplot(2, 1, 2)
-sns.boxplot(data=prs_scores_final_df, x='risk_category', y='prs_zscore')
-plt.title('PRS Z-score by Risk Category')
-plt.xticks(rotation=45)
-plt.tight_layout()
+print("Visualizing distributions with improved aesthetics...")
+fig, axs = plt.subplots(2, 2, figsize=(20, 12))
+plt.subplots_adjust(wspace=0.3, hspace=0.4)
+
+# Histogram of PRS z-scores
+sns.histplot(data=prs_scores_final_df, x='prs_zscore', bins=50, ax=axs[0,0], color=palette(0.2))
+axs[0,0].set_title('T1D PRS Z-score Distribution', fontsize=18, fontweight='bold')
+axs[0,0].set_xlabel('PRS Z-score', fontsize=16)
+axs[0,0].set_ylabel('Frequency', fontsize=16)
+
+# Boxplot by risk category
+sns.boxplot(data=prs_scores_final_df, x='risk_category', y='prs_zscore', ax=axs[0,1], palette="magma")
+axs[0,1].set_title('PRS Z-score by Risk Category', fontsize=18, fontweight='bold')
+axs[0,1].set_xlabel('Risk Category', fontsize=16)
+axs[0,1].set_ylabel('PRS Z-score', fontsize=16)
+axs[0,1].tick_params(axis='x', rotation=45)
+
+# KDE plot of PRS z-scores
+sns.kdeplot(data=prs_scores_final_df, x='prs_zscore', shade=True, ax=axs[1,0], color=palette(0.6))
+axs[1,0].set_title('PRS Z-score Density', fontsize=18, fontweight='bold')
+axs[1,0].set_xlabel('PRS Z-score', fontsize=16)
+axs[1,0].set_ylabel('Density', fontsize=16)
+
+# Scatterplot: Z-score vs Percentile (just to check)
+sns.scatterplot(data=prs_scores_final_df, x='prs_zscore', y='prs_percentile', ax=axs[1,1], color=palette(0.8), alpha=0.7)
+axs[1,1].set_title('PRS Z-score vs Percentile', fontsize=18, fontweight='bold')
+axs[1,1].set_xlabel('PRS Z-score', fontsize=16)
+axs[1,1].set_ylabel('PRS Percentile', fontsize=16)
+
+plt.suptitle("T1D PRS Distribution and Categories", fontsize=24, fontweight='bold')
+plt.show()
 
 print("Z-score stats:")
 print(prs_scores_final_df['prs_zscore'].describe(), "\n")
@@ -407,12 +424,10 @@ print("Saving standardized PRS scores (with z-scores and categories) to:", stand
 prs_scores_final_df.to_csv(standardized_scores_path, index=False)
 print("Standardized PRS scores saved.\n")
 
-plt.show()
-
 print("Evaluating PRS against T1D phenotype...")
 workspace_cdr = os.environ["WORKSPACE_CDR"]
 
-# These codes are not correct for T1D. They need to be switched
+# NOTE: The codes used here are placeholders and not correct for T1D, but we leave them
 T1D_query = f"""
 SELECT 
     person_id as s,
@@ -435,14 +450,15 @@ auc_val = roc_auc_score(merged_scores['T1D_status'], merged_scores['prs_zscore']
 fpr_arr, tpr_arr, _ = roc_curve(merged_scores['T1D_status'], merged_scores['prs_zscore'])
 
 plt.figure(figsize=(10, 8))
-plt.plot(fpr_arr, tpr_arr, color='blue', lw=2, label=f'ROC (AUC = {auc_val:.3f})')
-plt.plot([0, 1], [0, 1], color='gray', linestyle='--')
+sns.lineplot(x=fpr_arr, y=tpr_arr, color='blue', lw=2, label=f'ROC (AUC = {auc_val:.3f})')
+sns.lineplot(x=[0,1], y=[0,1], color='gray', linestyle='--')
 plt.xlim([0, 1])
 plt.ylim([0, 1.05])
-plt.xlabel('False Positive Rate')
-plt.ylabel('True Positive Rate')
-plt.title('T1D PRS ROC Curve')
+plt.xlabel('False Positive Rate', fontsize=14)
+plt.ylabel('True Positive Rate', fontsize=14)
+plt.title('T1D PRS ROC Curve', fontsize=18, fontweight='bold')
 plt.legend(loc="lower right")
+plt.show()
 
 merged_scores['prs_quintile'] = pd.qcut(merged_scores['prs_zscore'], q=5, labels=['Q1', 'Q2', 'Q3', 'Q4', 'Q5'])
 quintile_stats = merged_scores.groupby('prs_quintile').agg({'T1D_status': ['count', 'mean']}).reset_index()
@@ -451,7 +467,6 @@ print("=== T1D Association Summary ===")
 print("ROC-AUC:", round(auc_val, 3))
 print("\nT1D prevalence by PRS quintile:")
 print(quintile_stats, "\n")
-plt.show()
 
 print("Performing additional T1D prevalence and logistic regression analysis...")
 total_subjects = len(merged_scores)
@@ -499,11 +514,12 @@ for idx, bar_obj in enumerate(bars):
     grp = group_labels[idx]
     plt.text(bar_obj.get_x() + bar_obj.get_width()/2., height,
              f'Cases={comparison_data[grp]["cases"]}',
-             ha='center', va='bottom')
+             ha='center', va='bottom', fontsize=14, fontweight='bold')
 
-plt.title('T1D Prevalence in Top vs Bottom 5% of PRS Distribution', pad=20)
-plt.ylabel('T1D Prevalence (%)')
+plt.title('T1D Prevalence in Top vs Bottom 5% of PRS Distribution', fontsize=18, fontweight='bold', pad=20)
+plt.ylabel('T1D Prevalence (%)', fontsize=14)
 plt.tight_layout()
+plt.show()
 
 top_5_odds = comparison_data['Top 5%']['cases'] / (comparison_data['Top 5%']['count'] - comparison_data['Top 5%']['cases'])
 bottom_5_odds = comparison_data['Bottom 5%']['cases'] / (comparison_data['Bottom 5%']['count'] - comparison_data['Bottom 5%']['cases'])
@@ -517,7 +533,6 @@ for grp_key, grp_val in comparison_data.items():
     print(f"  T1D cases: {grp_val['cases']}")
 
 print(f"\nOdds Ratio (Top 5% vs Bottom 5%): {odds_ratio_val:.2f}\n")
-plt.show()
 
 job_end_time = datetime.datetime.now()
 print("********** JOB COMPLETED **********")
