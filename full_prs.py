@@ -430,11 +430,21 @@ workspace_cdr = os.environ["WORKSPACE_CDR"]
 # NOTE: The codes used here are placeholders and not correct for T1D, but we leave them
 T1D_query = f"""
 SELECT 
-    person_id as s,
-    MAX(CASE WHEN condition_source_value IN ('I25.1', 'I25.10', 'I25.11', 'I25.118', 'I25.119',
-                                           'I25.2', 'I25.3', 'I25.41', 'I25.42', 'I25.5', 'I25.6',
-                                           'I25.89', 'I25.9', '414.00', '414.01', '414.0', '414')
-             THEN 1 ELSE 0 END) as T1D_status
+    person_id AS s,
+    MAX(
+        CASE WHEN condition_source_value IN (
+            -- ICD-10 codes for CAD
+            'I25.1', 'I25.10', 'I25.11', 'I25.118', 'I25.119',
+            'I25.2', 'I25.3', 'I25.41', 'I25.42', 'I25.5', 'I25.6',
+            'I25.89', 'I25.9',
+            -- ICD-9 codes for CAD
+            '414', '414.0', '414.00', '414.01', '414.02', '414.03', '414.04', 
+            '414.05', '414.06', '414.07', '414.2'
+        )
+        THEN 1 
+        ELSE 0 
+        END
+    ) AS T1D_status
 FROM `{workspace_cdr}.condition_occurrence`
 GROUP BY person_id
 """
@@ -459,6 +469,55 @@ plt.ylabel('True Positive Rate', fontsize=14)
 plt.title('T1D PRS ROC Curve', fontsize=18, fontweight='bold')
 plt.legend(loc="lower right")
 plt.show()
+
+
+# Harmonize CAD / T1D later
+
+print("Analyzing CAD prevalence across PRS deciles...")
+
+# Categorize samples into deciles based on PRS z-score
+merged_scores['prs_decile'] = pd.qcut(merged_scores['prs_zscore'], q=10, labels=[f'D{i}' for i in range(1,11)])
+
+# Compute prevalence of CAD in each decile
+decile_stats = merged_scores.groupby('prs_decile').agg({'CAD_status': ['count', 'mean']}).reset_index()
+decile_stats.columns = ['prs_decile', 'count', 'prevalence']
+decile_stats['prevalence'] = decile_stats['prevalence'] * 100
+
+print("CAD Prevalence by PRS Decile:")
+print(decile_stats, "\n")
+
+# Plot CAD prevalence by decile
+plt.figure(figsize=(12, 6))
+sns.barplot(data=decile_stats, x='prs_decile', y='prevalence', palette='viridis')
+plt.title('CAD Prevalence by PRS Decile', fontsize=18, fontweight='bold')
+plt.xlabel('PRS Decile', fontsize=14)
+plt.ylabel('CAD Prevalence (%)', fontsize=14)
+for i, row in decile_stats.iterrows():
+    plt.text(i, row['prevalence']+0.5, f"{row['prevalence']:.2f}%", ha='center', va='bottom', fontsize=12)
+plt.tight_layout()
+plt.show()
+
+# ---------------------------------------
+# CHANGE IN RISK PER SD INCREMENT
+# ---------------------------------------
+
+print("Calculating odds ratio per standard deviation (SD) increase in PRS...")
+
+# Logistic regression with PRS z-score as a predictor of CAD status
+X = merged_scores[['prs_zscore']]
+y = merged_scores['CAD_status']
+log_model = LogisticRegression()
+log_model.fit(X, y)
+
+# Extract odds ratio per SD from the logistic model coefficients
+# The logistic regression coefficient is in log-odds per unit change in PRS z-score.
+# Since PRS z-score is already standardized, the coefficient directly represents log-odds per SD.
+log_odds_per_SD = log_model.coef_[0][0]
+odds_ratio_per_SD = np.exp(log_odds_per_SD)
+
+print(f"Odds Ratio per 1 SD increase in PRS: {odds_ratio_per_SD:.2f}\n")
+
+
 
 merged_scores['prs_quintile'] = pd.qcut(merged_scores['prs_zscore'], q=5, labels=['Q1', 'Q2', 'Q3', 'Q4', 'Q5'])
 quintile_stats = merged_scores.groupby('prs_quintile').agg({'T1D_status': ['count', 'mean']}).reset_index()
