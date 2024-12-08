@@ -139,25 +139,26 @@ def preview_harmonized_file(harmonized_file):
 
 def prepare_prs_weight_table(harmonized_file, prs_id):
     print("Reading harmonized PRS weight file into DataFrame...")
-    prs_df = pd.read_csv(harmonized_file, sep='\t', comment='#')
-    print("PRS weight data loaded. Variant count:", len(prs_df), "\n")
+    score_df = pd.read_csv(harmonized_file, sep='\t', comment='#')
+    print("PRS weight data loaded. Variant count:", len(score_df), "\n")
 
-    print("Renaming to standardized schema...")
-    prs_df = prs_df.rename(columns={
+    print("Renaming and selecting relevant columns...")
+    score_df = score_df.rename(columns={
         'hm_chr': 'chr',
         'hm_pos': 'bp',
         'effect_allele': 'effect_allele',
-        'other_allele': 'noneffect_allele',
         'effect_weight': 'weight'
     })
-    prs_df = prs_df[['chr', 'bp', 'effect_allele', 'noneffect_allele', 'weight']]
-    prs_df['chr'] = prs_df['chr'].astype(str)
+
+    score_df = score_df[['chr', 'bp', 'effect_allele', 'weight']]
+    score_df['chr'] = score_df['chr'].astype(str)
 
     prepared_csv = f'{prs_id}_prepared_weight_table.csv'
     print("Storing processed PRS weight table locally as:", prepared_csv)
-    prs_df.to_csv(prepared_csv, index=False)
+    score_df.to_csv(prepared_csv, index=False)
     print("PRS weight table saved locally.\n")
     return prepared_csv
+
 
 def upload_prs_table_to_gcs(local_csv, prs_id):
     prs_weights_dest = f'scores/{prs_id}/weight_table/{prs_id}_weight_table.csv'
@@ -190,7 +191,7 @@ def rebuild_prs_weight_table_as_df(input_path, bucket):
     print("[ PRS Weight Table Rebuild Complete ]\n")
     return df
 
-def save_rebuilt_prs_df_to_gcs(df, output_path, bucket):
+def save_rebuilt_score_df_to_gcs(df, output_path, bucket):
     print("Saving updated PRS weight table...")
     fs = gcsfs.GCSFileSystem() if bucket else None
     if bucket:
@@ -206,20 +207,19 @@ def load_prepared_prs_table_for_annotation(bucket, weight_path):
     fs = gcsfs.GCSFileSystem() if bucket else None
     if bucket:
         with fs.open(f'{bucket}/{weight_path}', 'rb') as infile:
-            prs_df = pd.read_csv(infile)
+            score_df = pd.read_csv(infile)
     else:
-        prs_df = pd.read_csv(weight_path)
+        score_df = pd.read_csv(weight_path)
 
-    essential = ["variant_id", "weight", "contig", "position", "effect_allele", "noneffect_allele"]
+    essential = ["variant_id", "weight", "contig", "position", "effect_allele"]
     for c in essential:
-        if c not in prs_df.columns:
+        if c not in score_df.columns:
             raise ValueError(f"PRS weight table missing required column: {c}")
 
-    # Write the temp file to GCS instead of local, so cluster workers can access it
     fs = gcsfs.GCSFileSystem()
     temp_gcs = f"{project_bucket}/hail_temp/temp_prs_for_hail.csv"
     with fs.open(temp_gcs, 'w') as outfile:
-        prs_df.to_csv(outfile, index=False)
+        score_df.to_csv(outfile, index=False)
 
     prs_ht = hl.import_table(temp_gcs, delimiter=',', types={'weight': hl.tfloat64, 'position': hl.tint32})
     prs_ht = prs_ht.annotate(locus=hl.locus(prs_ht.contig, prs_ht.position))
@@ -228,8 +228,7 @@ def load_prepared_prs_table_for_annotation(bucket, weight_path):
     return prs_ht
 
 def calculate_effect_allele_dosage(vds_row):
-    eff_allele = vds_row.prs_info['effect_allele']
-    non_eff_allele = vds_row.prs_info['noneffect_allele']
+    eff_allele = vds_row.prs_variant_info['effect_allele']
     ref_allele = vds_row.alleles[0]
     alt_alleles = hl.set(vds_row.alleles[1:].map(lambda x: x))
 
@@ -245,10 +244,10 @@ def calculate_effect_allele_dosage(vds_row):
              .when(vds_row.GT.is_het() & is_effect_alt, 1)
              .default(0))
 
-def extract_intervals_for_filter(prs_df, bucket, output_path, prs_id):
+def extract_intervals_for_filter(score_df, bucket, output_path, prs_id):
     print("Extracting variant intervals for filtering VDS...")
-    prs_df['end'] = prs_df['position']
-    intervals_df = prs_df[['contig', 'position', 'end']]
+    score_df['end'] = score_df['position']
+    intervals_df = score_df[['contig', 'position', 'end']]
 
     interval_file = f"{output_path}/interval/{prs_id}_interval.tsv"
     full_interval_path = f"{bucket}/{interval_file}" if bucket else interval_file
@@ -271,19 +270,25 @@ def filter_vds_by_intervals(vds, interval_path):
 
 def annotate_and_compute_prs_scores(vds_filtered, prs_ht):
     print("Annotating VDS with PRS info and computing scores...")
-    prs_mt = vds_filtered.variant_data.annotate_rows(prs_info=prs_ht[vds_filtered.variant_data.locus])
+    prs_mt = vds_filtered.variant_data.annotate_rows(prs_variant_info=prs_ht[vds_filtered.variant_data.locus])
     prs_mt = prs_mt.unfilter_entries()
 
-    effect_allele_expr = calculate_effect_allele_dosage(prs_mt)
+    effect_allele_dosage_expr = calculate_effect_allele_dosage(prs_mt)
     prs_mt = prs_mt.annotate_entries(
-        effect_allele_count=effect_allele_expr,
-        weighted_count=effect_allele_expr * prs_mt.prs_info['weight']
+        effect_allele_count=effect_allele_dosage_expr,
+        variant_contribution=effect_allele_dosage_expr * prs_mt.prs_variant_info['weight']
     )
     prs_mt = prs_mt.annotate_cols(
-        sum_weights=hl.agg.sum(prs_mt.weighted_count),
-        N_variants=hl.agg.count_where(hl.is_defined(prs_mt.weighted_count))
+        total_score=hl.agg.sum(prs_mt.variant_contribution),
+        variant_count=hl.agg.count_where(hl.is_defined(prs_mt.variant_contribution))
     )
-    print("PRS scores computed.\n")
+
+    # Normalize by the number of variants before z-scoring
+    prs_mt = prs_mt.annotate_cols(
+        normalized_score=prs_mt.total_score / hl.float64(prs_mt.variant_count)
+    )
+
+    print("PRS scores computed and normalized.\n")
     return prs_mt
 
 def save_prs_scores(prs_mt, output_path, prs_id, bucket):
@@ -306,8 +311,8 @@ def export_found_variants(prs_mt, output_path, prs_id, bucket):
     found_variants_csv = f'{output_path}/score/{prs_id}_found_in_aou.csv'
     full_found_csv = f'{bucket}/{found_variants_csv}' if bucket else found_variants_csv
     print("Extracting variants found in AoU cohort...")
-    found_vars_ht = prs_mt.filter_rows(hl.is_defined(prs_mt.prs_info)).rows()
-    found_vars_df = found_vars_ht.select(found_vars_ht.prs_info).to_pandas()
+    found_vars_ht = prs_mt.filter_rows(hl.is_defined(prs_mt.prs_variant_info)).rows()
+    found_vars_df = found_vars_ht.select(found_vars_ht.prs_variant_info).to_pandas()
     print("Number of variants found in AoU:", found_vars_df.shape[0])
 
     fs = gcsfs.GCSFileSystem() if bucket else None
@@ -316,7 +321,7 @@ def export_found_variants(prs_mt, output_path, prs_id, bucket):
             found_vars_df.to_csv(outfile, header=True, index=False, sep=',')
     else:
         found_vars_df.to_csv(full_found_csv, header=True, index=False, sep=',')
-    print("Found variants saved at:", full_found_csv, "\n")
+    print("Found variants at:", full_found_csv, "\n")
 
 
 # ------------------- MAIN SCRIPT EXECUTION -------------------
@@ -337,7 +342,7 @@ prepared_csv = prepare_prs_weight_table(harmonized_file, target_prs_id)
 prs_weights_destination = upload_prs_table_to_gcs(prepared_csv, target_prs_id)
 
 rebuilt_df = rebuild_prs_weight_table_as_df(prs_weights_destination, project_bucket)
-save_rebuilt_prs_df_to_gcs(rebuilt_df, prs_weights_destination, project_bucket)
+save_rebuilt_score_df_to_gcs(rebuilt_df, prs_weights_destination, project_bucket)
 print("PRS weight table preparation phase finished.\n")
 
 prs_output_directory = f'scores/{target_prs_id}/calculated_scores'
@@ -366,13 +371,13 @@ found_variants_final_df = pd.read_csv(found_variants_gcs)
 print("Loaded discovered variants. Shape:", found_variants_final_df.shape, "\n")
 
 print("Descriptive stats for PRS scores:")
-print(prs_scores_final_df['sum_weights'].describe(), "\n")
+print(prs_scores_final_df['total_score'].describe(), "\n")
 
 print("Distribution of the count of variants per sample:")
-print(prs_scores_final_df['N_variants'].value_counts(), "\n")
+print(prs_scores_final_df['variant_count'].value_counts(), "\n")
 
 print("Computing Z-scores and percentiles for the PRS distribution...")
-prs_scores_final_df['prs_zscore'] = (prs_scores_final_df['sum_weights'] - prs_scores_final_df['sum_weights'].mean()) / prs_scores_final_df['sum_weights'].std()
+prs_scores_final_df['prs_zscore'] = (prs_scores_final_df['total_score'] - prs_scores_final_df['total_score'].mean()) / prs_scores_final_df['total_score'].std()
 prs_scores_final_df['prs_percentile'] = prs_scores_final_df['prs_zscore'].rank(pct=True) * 100
 
 print("Categorizing samples into quintiles...")
